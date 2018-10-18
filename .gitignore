@@ -1,0 +1,7 @@
+.*
+!.git?*
+*~
+*.bin
+/stage1/stage1_bios_fat12
+/stage1/stage1_bios_fat16
+/stage1/stage1_bios_fat32
