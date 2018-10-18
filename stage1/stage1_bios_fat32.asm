@@ -133,9 +133,10 @@ _bpb_fs_type:
 ;; Addresses for stack and temporal variables
 %define STK_BASE        0x7c00
 %define tmp_dx          0x7bfe
-%define tmp_numfat      0x7bfc
-%define tmp_offsec_fat  0x7bf8
-%define tmp_offsec_data 0x7bf4
+%define tmp_tstate      0x7bfc
+%define tmp_numfat      0x7bfa
+%define tmp_offsec_fat  0x7bf6
+%define tmp_offsec_data 0x7bf2
 
 ;; Addresses for optimization
 ;; bpb_*    : help NASM to optimize fixed addresses
@@ -192,6 +193,7 @@ start:
 	mov  sp, STK_BASE
 	mov  di, REL_BASE
 	push dx                    ; tmp_dx
+	push ax                    ; tmp_tstate := { 0, 0 }
 	push word[rel_bpb(numfat)] ; tmp_numfat (lower byte only)
 
 disk_reset:
@@ -219,10 +221,7 @@ disk_check_ext13h:
 	shr  cx, 1
 	jnc  short .noext
 	.ext:
-	; BX == 0
-	; BL == 0
-	; SMI1 -> SMC1
-	mov  byte[read_disk.ext-1], bl
+	dec  byte[rel_tmp(tstate)+1] ; tmp_tstate[1] := 0xff
 	.noext:
 
 fs_calc_geom:
@@ -258,8 +257,6 @@ fs_traverse_loop:
 	xor  cx, cx
 	sub  si, byte 2
 	sbb  ax, cx
-	._err_boot_1cp:
-		jc   short err_boot
 	; CX == 0
 	; CX := word(numsec_clus)
 	mov  cl, [rel_bpb(numsec_clus)]
@@ -276,11 +273,13 @@ fs_traverse_loop:
 	add  dx, si
 	add  ax, [rel_tmp(offsec_data)]
 	adc  dx, [rel_tmp(offsec_data)+2]
+	._err_boot_1cp:
+		jc   short err_boot
 	; CX == word(numsec_clus)
 	.sectorloop:
 		call read_disk
-		; SMC2: e8 xxxx (.boot_find_file) -> be xxxx (MOV si, xxxx)
-		jmp short .boot_find_file
+		rol  byte[rel_tmp(tstate)+0], 1
+		jc   .boot_find_file_end
 		.boot_find_file:
 			; BL == 0 (according to the FAT spec [no 128-byte sector or some])
 			; BP := BX
@@ -378,13 +377,13 @@ fs_traverse_loop:
 	and  ax, bp
 	; Normal cluster if AX != 0x0FFF
 	cmp  ax, bp
-	jne  short fs_traverse_loop
+	jne  fs_traverse_loop_to_start
 	; Check terminator
 	cmp  si, byte -9
-	; SMC3: eb xx (err_boot) -> eb xx (boot)
-	ja   err_boot
-	.to_start:
-		jmp  near fs_traverse_loop
+	jna  fs_traverse_loop_to_start
+	; boot if reading boot file is finished.
+	rol  byte[rel_tmp(tstate)+0], 1
+	jc   short boot
 
 
 
@@ -421,6 +420,10 @@ err_boot:
 		hlt
 		jmp  short .final
 
+; TRAMPOLINE
+fs_traverse_loop_to_start:
+	jmp  near fs_traverse_loop
+
 
 
 ; FINAL PROCEDURE
@@ -446,14 +449,9 @@ boot_found_file:
 	; AX:SI := dword(file_clus)
 	mov  ax, [si+0x14]
 	mov  si, [si+0x1a]
-	; BL == 0
-	; ZF := 1
-	; SMI2 -> SMC2
-	; SMI3 -> SMC3
-	mov  byte[fs_traverse_loop.boot_find_file-1], fs_traverse_loop.boot_find_file_end - fs_traverse_loop.boot_find_file
-	mov  byte[fs_traverse_loop.to_start-1], boot - fs_traverse_loop.to_start
+	dec  byte[rel_tmp(tstate)+0] ; tmp_tstate[0] := 0xff
 	; Back to FAT32 traversal
-	jmp  short fs_traverse_loop.to_start
+	jmp  short fs_traverse_loop_to_start
 
 
 
@@ -474,8 +472,8 @@ read_disk:
 	push ax
 	push cx
 	push dx
-	; SMC1: eb xx (_read_disk_noext) -> eb 00
-	jmp short .noext
+	rol  byte[rel_tmp(tstate)+1], 1
+	jnc  short .noext
 	.ext:
 		; AX == LBA_LO
 		; DX == LBA_HI

@@ -119,9 +119,10 @@ _bpb_fs_type:
 ;; Addresses for stack and temporal variables
 %define STK_BASE        0x7c00
 %define tmp_dx          0x7bfe
-%define tmp_numroot     0x7bfc
-%define tmp_offsec_fat  0x7bf8
-%define tmp_offsec_data 0x7bf4
+%define tmp_tstate      0x7bfc
+%define tmp_numroot     0x7bfa
+%define tmp_offsec_fat  0x7bf6
+%define tmp_offsec_data 0x7bf2
 
 ;; Addresses for optimization
 ;; bpb_*    : help NASM to optimize fixed addresses
@@ -171,6 +172,7 @@ start:
 	mov  sp, STK_BASE
 	mov  di, REL_BASE
 	push dx                     ; tmp_dx
+	push ax                     ; tmp_tstate := { 0, 0 }
 	push word[rel_bpb(numroot)] ; tmp_numroot
 
 disk_reset:
@@ -198,10 +200,7 @@ disk_check_ext13h:
 	shr  cx, 1
 	jnc  short .noext
 	.ext:
-	; BX == 0
-	; BL == 0
-	; SMI1 -> SMC1
-	mov  byte[read_disk.ext-1], bl
+	dec  byte[rel_tmp(tstate)+1] ; tmp_tstate[1] := 0xff
 	.noext:
 
 fs_calc_geom:
@@ -258,8 +257,8 @@ fs_calc_geom:
 ;;     - Traverse FAT if CX == 0
 disk_read_loop:
 	call read_disk
-	; SMC2: eb 00 (boot_find_file) -> eb xx (_fs_traverse_fat_find_end)
-	jmp short boot_find_file
+	rol  byte[rel_tmp(tstate)+0], 1
+	jc   short boot_find_file.end
 	boot_find_file:
 		; BL == 0 (according to the FAT spec [no 128-byte sector or some])
 		; BP := BX
@@ -326,9 +325,9 @@ disk_read_loop:
 	jae  short boot
 	loop disk_read_loop
 
-; SMC3: eb xx (err_boot) -> eb 00 (nop)
 _err_boot_1p:
-	jmp  short err_boot
+	rol  byte[rel_tmp(tstate)+0], 1
+	jnc  short err_boot
 
 fs_traverse_fat:
 	pop  ax
@@ -371,7 +370,7 @@ fs_traverse_fat_next:
 	mul  cx
 	add  ax, [rel_tmp(offsec_data)]
 	adc  dx, [rel_tmp(offsec_data)+2]
-	jmp  short disk_read_loop
+	jmp  near disk_read_loop
 
 
 
@@ -411,12 +410,7 @@ _boot_found_file:
 	; SI == directory entry
 	; AX := word(file_clus)
 	mov  ax, [si+0x1a]
-	; CH == 0
-	; ZF := 1
-	; SMI2 -> SMC2
-	; SMI3 -> SMC3
-	mov  byte[boot_find_file-1], boot_find_file.end - boot_find_file
-	mov  byte[  _err_boot_1p+1], ch
+	dec  byte[rel_tmp(tstate)+0] ; tmp_tstate[0] := 0xff
 	; Back to FAT traversal
 	jmp  short fs_traverse_fat_next
 
@@ -474,8 +468,8 @@ read_disk:
 	push ax
 	push cx
 	push dx
-	; SMC1: eb xx (_read_disk_noext) -> eb 00
-	jmp short .noext
+	rol  byte[rel_tmp(tstate)+1], 1
+	jnc  short .noext
 	.ext:
 		; AX == LBA_LO
 		; DX == LBA_HI
