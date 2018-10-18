@@ -6,7 +6,7 @@
 ;   stage1_bios_fat12.asm
 ;   BIOS Boot loader for FAT12
 ;
-;   Copyright(C) 2012,2013 Tsukasa Oi.
+;   Copyright(C) 2012,2013,2018 Tsukasa Oi.
 ;   Copyright(C) 2012 Hideki EIRAKU.
 ;
 ;
@@ -45,7 +45,6 @@ org  0x7c00
 ;; Implementation Notes:
 ;; * This boot loader is segment-independent while it is loaded on
 ;;   linear address 0x07c00. Location may be 0000:7c00 or 07c0:0000.
-;; * It destroys some contents of BPB on memory.
 ;; * It includes self-modification of the boot loader itself.
 
 _start:
@@ -120,8 +119,9 @@ _bpb_fs_type:
 ;; Addresses for stack and temporal variables
 %define STK_BASE        0x7c00
 %define tmp_dx          0x7bfe
-%define tmp_offsec_fat  0x7bfa
-%define tmp_offsec_data 0x7bf6
+%define tmp_numroot     0x7bfc
+%define tmp_offsec_fat  0x7bf8
+%define tmp_offsec_data 0x7bf4
 
 ;; Addresses for optimization
 ;; bpb_*    : help NASM to optimize fixed addresses
@@ -170,7 +170,8 @@ start:
 	; DI := REL_BASE
 	mov  sp, STK_BASE
 	mov  di, REL_BASE
-	push dx ; tmp_dx
+	push dx                     ; tmp_dx
+	push word[rel_bpb(numroot)] ; tmp_numroot
 
 disk_reset:
 	; BIOS CALL: RESET DISK
@@ -312,7 +313,7 @@ disk_read_loop:
 			; found directory entry if file names are equal
 			je   short boot_found_file
 			.next:
-			dec  word [rel_bpb(numroot)]
+			dec  word [rel_tmp(numroot)]
 			jz   short _err_boot_1p
 			; SI := next directory entry
 			add  si, byte 0x20
